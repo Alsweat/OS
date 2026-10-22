@@ -1,0 +1,200 @@
+name: Build ISO
+
+# =============================================================================
+# 404 NOT FOUND OS — self-contained ISO builder.
+# This ONE file is all you need. It writes the whole Debian live-build config
+# itself, builds a bootable ISO in GitHub's cloud, and uploads it so you can
+# download it from your browser.
+#
+# HOW TO USE:
+#   1. In your repo: Actions tab -> "set up a workflow yourself".
+#   2. Delete the sample content, paste THIS entire file, click Commit.
+#   3. Actions tab -> "Build ISO" -> "Run workflow".
+#   4. Wait ~40-70 min. Open the green run -> Artifacts -> download "notfound-iso".
+# =============================================================================
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache || true
+          df -h /
+
+      - name: Install live-build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y live-build ca-certificates
+
+      - name: Generate distro config
+        run: |
+          set -e
+          mkdir -p auto config/package-lists config/hooks/live config/includes.chroot/etc
+
+          # ---- live-build configuration ----
+          cat > auto/config <<'CFG'
+          #!/bin/sh
+          set -e
+          lb config noauto \
+              --mode debian \
+              --distribution bookworm \
+              --architectures amd64 \
+              --archive-areas "main contrib non-free non-free-firmware" \
+              --debian-installer live \
+              --iso-application "404 NOT FOUND OS" \
+              --iso-publisher "404 NOT FOUND OS Project" \
+              --iso-volume "404-NOT-FOUND-OS" \
+              --memtest none \
+              --apt-recommends false \
+              --bootappend-live "boot=live components username=ghost hostname=notfound locales=en_US.UTF-8 keyboard-layouts=us" \
+              "${@}"
+          CFG
+          chmod +x auto/config
+
+          # ---- CORE packages (known to exist in Debian; build must succeed) ----
+          cat > config/package-lists/pentest.list.chroot <<'PKG'
+          live-boot
+          live-config
+          live-config-systemd
+          sudo
+          locales
+          network-manager
+          task-xfce-desktop
+          lightdm
+          zsh
+          git
+          curl
+          wget
+          vim
+          tmux
+          htop
+          net-tools
+          python3
+          python3-pip
+          jq
+          unzip
+          p7zip-full
+          nmap
+          masscan
+          dnsutils
+          dnsenum
+          dnsrecon
+          netdiscover
+          whois
+          sqlmap
+          nikto
+          whatweb
+          wfuzz
+          dirb
+          john
+          hashcat
+          hydra
+          medusa
+          crunch
+          cewl
+          aircrack-ng
+          kismet
+          reaver
+          wifite
+          bettercap
+          macchanger
+          wireshark
+          tshark
+          tcpdump
+          ettercap-graphical
+          dsniff
+          mitmproxy
+          radare2
+          gdb
+          binwalk
+          apktool
+          sleuthkit
+          foremost
+          libimage-exiftool-perl
+          tor
+          torsocks
+          proxychains4
+          PKG
+
+          # ---- EXTRA tools: best-effort (missing ones won't fail the build) ----
+          cat > config/hooks/live/0200-extras.hook.chroot <<'HOOK'
+          #!/bin/sh
+          # Try to install tools that may or may not be in the Debian repos.
+          # Each is attempted independently; failures are ignored.
+          set +e
+          for p in theharvester recon-ng amass gobuster ffuf wpscan zaproxy \
+                   exploitdb beef-xss set metasploit-framework seclists wordlists \
+                   nuclei autopsy volatility3 commix; do
+              apt-get install -y "$p" 2>/dev/null && echo "[extras] installed $p" || echo "[extras] skipped $p"
+          done
+          exit 0
+          HOOK
+          chmod +x config/hooks/live/0200-extras.hook.chroot
+
+          # ---- branding hook ----
+          cat > config/hooks/live/0100-branding.hook.chroot <<'HOOK'
+          #!/bin/sh
+          set -e
+          mkdir -p /etc/lightdm
+          cat > /etc/lightdm/lightdm-gtk-greeter.conf <<EOF
+          [greeter]
+          background=#04070a
+          theme-name=Adwaita-dark
+          clock-format=%H:%M  %a %d %b
+          EOF
+          mkdir -p /etc/skel/.config/gtk-3.0
+          printf '[Settings]\ngtk-application-prefer-dark-theme=1\n' > /etc/skel/.config/gtk-3.0/settings.ini
+          echo "branding applied."
+          HOOK
+          chmod +x config/hooks/live/0100-branding.hook.chroot
+
+          # ---- os-release branding ----
+          cat > config/includes.chroot/etc/os-release <<'REL'
+          PRETTY_NAME="404 NOT FOUND OS (ghost edition)"
+          NAME="404 NOT FOUND OS"
+          VERSION_ID="1.0"
+          VERSION="1.0 (ghost)"
+          VERSION_CODENAME=ghost
+          ID=notfoundos
+          ID_LIKE=debian
+          ANSI_COLOR="1;31"
+          REL
+
+          echo "=== generated files ==="
+          find auto config -type f
+
+      - name: Build ISO
+        run: |
+          sudo lb config
+          sudo lb build
+          ls -lh ./*.iso
+
+      - name: Rename ISO + checksum
+        run: |
+          iso=$(ls *.iso | head -1)
+          sudo mv "$iso" 404-not-found-os-amd64.iso
+          sha256sum 404-not-found-os-amd64.iso | tee 404-not-found-os-amd64.iso.sha256
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4.3.6
+        with:
+          name: notfound-iso
+          path: |
+            404-not-found-os-amd64.iso
+            404-not-found-os-amd64.iso.sha256
+          retention-days: 14
+
+      - name: Publish Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2.0.8
+        with:
+          files: |
+            404-not-found-os-amd64.iso
+            404-not-found-os-amd64.iso.sha256
