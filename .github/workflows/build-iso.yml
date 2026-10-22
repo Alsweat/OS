@@ -1,16 +1,16 @@
 name: Build ISO
 
 # =============================================================================
-# 404 NOT FOUND OS — self-contained ISO builder.
-# This ONE file is all you need. It writes the whole Debian live-build config
-# itself, builds a bootable ISO in GitHub's cloud, and uploads it so you can
-# download it from your browser.
+# 404 NOT FOUND OS — self-contained ISO builder (v2, resilient).
+# Only a guaranteed base system is mandatory; ALL pentest tools are installed
+# best-effort, so a single missing package can never fail the build.
 #
 # HOW TO USE:
-#   1. In your repo: Actions tab -> "set up a workflow yourself".
-#   2. Delete the sample content, paste THIS entire file, click Commit.
-#   3. Actions tab -> "Build ISO" -> "Run workflow".
-#   4. Wait ~40-70 min. Open the green run -> Artifacts -> download "notfound-iso".
+#   1. Repo -> Code -> .github/workflows/build-iso.yml -> pencil (Edit).
+#      (or Actions -> "set up a workflow yourself" if it doesn't exist yet)
+#   2. Select all, delete, paste THIS whole file, Commit.
+#   3. Actions -> "Build ISO" -> "Run workflow".
+#   4. Wait ~40-70 min. Green run -> Artifacts -> download "notfound-iso".
 # =============================================================================
 
 on:
@@ -38,7 +38,7 @@ jobs:
           set -e
           mkdir -p auto config/package-lists config/hooks/live config/includes.chroot/etc
 
-          # ---- live-build configuration ----
+          # ---- live-build configuration (pure live ISO, no d-i = fewer failures) ----
           cat > auto/config <<'CFG'
           #!/bin/sh
           set -e
@@ -47,7 +47,7 @@ jobs:
               --distribution bookworm \
               --architectures amd64 \
               --archive-areas "main contrib non-free non-free-firmware" \
-              --debian-installer live \
+              --debian-installer none \
               --iso-application "404 NOT FOUND OS" \
               --iso-publisher "404 NOT FOUND OS Project" \
               --iso-volume "404-NOT-FOUND-OS" \
@@ -58,85 +58,61 @@ jobs:
           CFG
           chmod +x auto/config
 
-          # ---- CORE packages (known to exist in Debian; build must succeed) ----
-          cat > config/package-lists/pentest.list.chroot <<'PKG'
+          # ---- MANDATORY base only (all guaranteed to exist in Debian bookworm) ----
+          cat > config/package-lists/base.list.chroot <<'PKG'
           live-boot
           live-config
           live-config-systemd
-          sudo
-          locales
-          network-manager
           task-xfce-desktop
           lightdm
+          network-manager
+          sudo
+          locales
           zsh
           git
           curl
           wget
           vim
-          tmux
-          htop
           net-tools
           python3
           python3-pip
-          jq
-          unzip
-          p7zip-full
-          nmap
-          masscan
-          dnsutils
-          dnsenum
-          dnsrecon
-          netdiscover
-          whois
-          sqlmap
-          nikto
-          whatweb
-          wfuzz
-          dirb
-          john
-          hashcat
-          hydra
-          medusa
-          crunch
-          cewl
-          aircrack-ng
-          kismet
-          reaver
-          wifite
-          bettercap
-          macchanger
-          wireshark
-          tshark
-          tcpdump
-          ettercap-graphical
-          dsniff
-          mitmproxy
-          radare2
-          gdb
-          binwalk
-          apktool
-          sleuthkit
-          foremost
-          libimage-exiftool-perl
-          tor
-          torsocks
-          proxychains4
+          ca-certificates
           PKG
 
-          # ---- EXTRA tools: best-effort (missing ones won't fail the build) ----
-          cat > config/hooks/live/0200-extras.hook.chroot <<'HOOK'
+          # ---- ALL pentest tools: best-effort (missing ones are skipped) ----
+          cat > config/hooks/live/0200-tools.hook.chroot <<'HOOK'
           #!/bin/sh
-          # Try to install tools that may or may not be in the Debian repos.
-          # Each is attempted independently; failures are ignored.
+          # Install every tool independently; a missing package never fails the build.
           set +e
-          for p in theharvester recon-ng amass gobuster ffuf wpscan zaproxy \
-                   exploitdb beef-xss set metasploit-framework seclists wordlists \
-                   nuclei autopsy volatility3 commix; do
-              apt-get install -y "$p" 2>/dev/null && echo "[extras] installed $p" || echo "[extras] skipped $p"
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          TOOLS="nmap masscan dnsutils dnsenum dnsrecon netdiscover whois \
+                 sqlmap nikto whatweb wfuzz dirb \
+                 john hashcat hydra medusa crunch cewl \
+                 aircrack-ng kismet reaver wifite bettercap macchanger \
+                 wireshark tshark tcpdump ettercap-graphical dsniff mitmproxy \
+                 radare2 gdb binwalk apktool \
+                 sleuthkit foremost libimage-exiftool-perl testdisk \
+                 tor torsocks proxychains4 \
+                 tmux htop jq unzip p7zip-full \
+                 theharvester recon-ng amass gobuster ffuf wpscan zaproxy \
+                 exploitdb beef-xss set metasploit-framework seclists wordlists \
+                 nuclei autopsy volatility3 commix dmitry hashid"
+          OK=""; SKIP=""
+          for p in $TOOLS; do
+              if apt-get install -y --no-install-recommends "$p" 2>/dev/null; then
+                  OK="$OK $p"; echo "[tools] installed $p"
+              else
+                  SKIP="$SKIP $p"; echo "[tools] skipped  $p"
+              fi
           done
+          echo "================ TOOL INSTALL SUMMARY ================"
+          echo "INSTALLED:$OK"
+          echo "SKIPPED  :$SKIP"
+          echo "====================================================="
           exit 0
           HOOK
-          chmod +x config/hooks/live/0200-extras.hook.chroot
+          chmod +x config/hooks/live/0200-tools.hook.chroot
 
           # ---- branding hook ----
           cat > config/hooks/live/0100-branding.hook.chroot <<'HOOK'
