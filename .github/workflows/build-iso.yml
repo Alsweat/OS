@@ -49,6 +49,8 @@ jobs:
               --archive-areas "main contrib non-free non-free-firmware" \
               --debian-installer none \
               --security false \
+              --firmware-chroot false \
+              --firmware-binary false \
               --iso-application "404 NOT FOUND OS" \
               --iso-publisher "404 NOT FOUND OS Project" \
               --iso-volume "404-NOT-FOUND-OS" \
