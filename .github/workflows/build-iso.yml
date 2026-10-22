@@ -33,6 +33,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y live-build ca-certificates
 
+      - name: Skip debian-installer stage (buggy in this live-build)
+        run: |
+          f=$(find /usr/lib/live /usr/share/live -type f -name 'binary_debian-installer' 2>/dev/null | head -1)
+          echo "binary_debian-installer: ${f:-not found}"
+          if [ -n "$f" ]; then
+            printf '#!/bin/sh\nexit 0\n' | sudo tee "$f" >/dev/null
+            sudo chmod +x "$f"
+            echo "patched to no-op."
+          fi
+
       - name: Generate distro config
         run: |
           set -e
