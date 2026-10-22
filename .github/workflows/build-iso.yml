@@ -1,13 +1,15 @@
 name: Build ISO
 
 # =============================================================================
-# 404 NOT FOUND OS — self-contained ISO builder (v2, resilient).
-# Only a guaranteed base system is mandatory; ALL pentest tools are installed
-# best-effort, so a single missing package can never fail the build.
+# 404 NOT FOUND OS — FINAL one-paste ISO builder.
+# The whole build runs INSIDE a real Debian bookworm container, so live-build
+# matches the target distro. This avoids the Ubuntu-live-build vs Debian
+# mismatches (security repo 404, firmware Contents 404, debian-installer,
+# isolinux paths) that needed hand-patching before.
 #
 # HOW TO USE:
-#   1. Repo -> Code -> .github/workflows/build-iso.yml -> pencil (Edit).
-#      (or Actions -> "set up a workflow yourself" if it doesn't exist yet)
+#   1. Repo -> Code -> .github/workflows/build-iso.yml -> pencil (Edit)
+#      (or Actions -> "set up a workflow yourself" if it doesn't exist).
 #   2. Select all, delete, paste THIS whole file, Commit.
 #   3. Actions -> "Build ISO" -> "Run workflow".
 #   4. Wait ~40-70 min. Green run -> Artifacts -> download "notfound-iso".
@@ -21,41 +23,22 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
     steps:
       - name: Free up disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache || true
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache /usr/local/share/boost || true
           df -h /
 
-      - name: Install live-build
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y live-build ca-certificates
-
-      - name: Neutralize debian-installer stage (buggy in this live-build)
-        run: |
-          set -x
-          # 1) no-op any standalone d-i stage script, wherever it lives
-          for f in $(sudo find /usr -type f \( -name 'binary_debian-installer' -o -name 'lb_binary_debian-installer' \) 2>/dev/null); do
-            echo "no-op stage script: $f"
-            printf '#!/bin/sh\nexit 0\n' | sudo tee "$f" >/dev/null
-            sudo chmod +x "$f"
-          done
-          # 2) belt-and-suspenders: no-op whatever file emits the error message
-          for f in $(sudo grep -rls 'debian-installer flavour' /usr 2>/dev/null); do
-            echo "no-op message source: $f"
-            printf '#!/bin/sh\nexit 0\n' | sudo tee "$f" >/dev/null
-            sudo chmod +x "$f"
-          done
-          echo "done neutralizing debian-installer."
-
-      - name: Generate distro config
+      - name: Prepare build dir + distro config
         run: |
           set -e
+          sudo mkdir -p /mnt/build
+          sudo chown "$USER" /mnt/build
+          cd /mnt/build
           mkdir -p auto config/package-lists config/hooks/live config/includes.chroot/etc
 
-          # ---- live-build configuration (pure live ISO, no d-i = fewer failures) ----
+          # ---- live-build configuration (pure live ISO; no d-i, no auto-firmware) ----
           cat > auto/config <<'CFG'
           #!/bin/sh
           set -e
@@ -65,20 +48,19 @@ jobs:
               --architectures amd64 \
               --archive-areas "main contrib non-free non-free-firmware" \
               --debian-installer none \
-              --security false \
               --firmware-chroot false \
               --firmware-binary false \
+              --memtest none \
+              --apt-recommends false \
               --iso-application "404 NOT FOUND OS" \
               --iso-publisher "404 NOT FOUND OS Project" \
               --iso-volume "404-NOT-FOUND-OS" \
-              --memtest none \
-              --apt-recommends false \
               --bootappend-live "boot=live components username=ghost hostname=notfound locales=en_US.UTF-8 keyboard-layouts=us" \
               "${@}"
           CFG
           chmod +x auto/config
 
-          # ---- MANDATORY base only (all guaranteed to exist in Debian bookworm) ----
+          # ---- MANDATORY base only (guaranteed to exist in Debian bookworm) ----
           cat > config/package-lists/base.list.chroot <<'PKG'
           live-boot
           live-config
@@ -99,10 +81,9 @@ jobs:
           ca-certificates
           PKG
 
-          # ---- ALL pentest tools: best-effort (missing ones are skipped) ----
+          # ---- ALL pentest tools: best-effort (missing ones skipped, build never fails) ----
           cat > config/hooks/live/0200-tools.hook.chroot <<'HOOK'
           #!/bin/sh
-          # Install every tool independently; a missing package never fails the build.
           set +e
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
@@ -134,7 +115,7 @@ jobs:
           HOOK
           chmod +x config/hooks/live/0200-tools.hook.chroot
 
-          # ---- branding hook ----
+          # ---- branding ----
           cat > config/hooks/live/0100-branding.hook.chroot <<'HOOK'
           #!/bin/sh
           set -e
@@ -151,7 +132,6 @@ jobs:
           HOOK
           chmod +x config/hooks/live/0100-branding.hook.chroot
 
-          # ---- os-release branding ----
           cat > config/includes.chroot/etc/os-release <<'REL'
           PRETTY_NAME="404 NOT FOUND OS (ghost edition)"
           NAME="404 NOT FOUND OS"
@@ -166,17 +146,29 @@ jobs:
           echo "=== generated files ==="
           find auto config -type f
 
-      - name: Build ISO
+      - name: Build ISO inside Debian bookworm container
         run: |
-          sudo lb config
-          sudo lb build
-          ls -lh ./*.iso
+          docker run --rm --privileged \
+            -v /mnt/build:/build -w /build \
+            debian:bookworm \
+            bash -c '
+              set -e
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y live-build ca-certificates xorriso squashfs-tools dosfstools mtools
+              lb config
+              lb build
+              ls -lh /build/*.iso
+            '
 
-      - name: Rename ISO + checksum
+      - name: Collect ISO + checksum
         run: |
-          iso=$(ls *.iso | head -1)
-          sudo mv "$iso" 404-not-found-os-amd64.iso
+          set -e
+          iso=$(ls /mnt/build/*.iso | head -1)
+          sudo cp "$iso" ./404-not-found-os-amd64.iso
+          sudo chown "$USER" ./404-not-found-os-amd64.iso
           sha256sum 404-not-found-os-amd64.iso | tee 404-not-found-os-amd64.iso.sha256
+          ls -lh 404-not-found-os-amd64.iso
 
       - name: Upload ISO artifact
         uses: actions/upload-artifact@v4.3.6
