@@ -18,11 +18,30 @@ jobs:
       - name: Prepare build dir + distro config
         run: |
           set -e
+          sudo apt-get update
+          sudo apt-get install -y imagemagick fonts-dejavu-core
           sudo mkdir -p /mnt/build
           sudo chown "$USER" /mnt/build
           cd /mnt/build
-          mkdir -p auto config/package-lists config/hooks/live config/includes.chroot/etc
+          mkdir -p auto config/package-lists config/hooks/live
+          mkdir -p config/includes.chroot/etc
+          mkdir -p config/includes.chroot/usr/share/backgrounds
+          mkdir -p config/includes.chroot/usr/local/bin
+          mkdir -p config/includes.chroot/etc/skel/.config/conky
+          mkdir -p config/includes.chroot/etc/skel/.config/autostart
+          mkdir -p config/includes.chroot/etc/skel/.config/gtk-3.0
+          mkdir -p config/includes.chroot/etc/skel/.config/xfce4/xfconf/xfce-perchannel-xml
+          mkdir -p config/includes.chroot/etc/skel/.config/xfce4/terminal
 
+          # ========== WALLPAPER (generated here, baked into the ISO) ==========
+          convert -size 1920x1080 radial-gradient:'#0c2a24'-'#04070a' \
+            -font DejaVu-Sans-Mono-Bold -gravity center \
+            -fill '#10e0a8' -pointsize 300 -annotate +0-60 '404' \
+            -fill '#1fb6d6' -pointsize 84 -annotate +0+120 'NOT FOUND OS' \
+            -fill '#5e817a' -font DejaVu-Sans-Mono -pointsize 30 -annotate +0+210 '// ghost edition   ·   stay anonymous' \
+            config/includes.chroot/usr/share/backgrounds/notfound.png
+
+          # ========== live-build configuration ==========
           cat > auto/config <<'CFG'
           #!/bin/sh
           set -e
@@ -44,12 +63,15 @@ jobs:
           CFG
           chmod +x auto/config
 
+          # ========== base packages (+ theming tools) ==========
           cat > config/package-lists/base.list.chroot <<'PKG'
           live-boot
           live-config
           live-config-systemd
           task-xfce-desktop
+          xfce4-terminal
           lightdm
+          lightdm-gtk-greeter
           network-manager
           sudo
           locales
@@ -62,14 +84,162 @@ jobs:
           python3
           python3-pip
           ca-certificates
+          conky-all
+          cmatrix
+          neofetch
+          papirus-icon-theme
+          gnome-themes-extra
+          fonts-firacode
           PKG
 
+          # ========== wallpaper setter (reliable, runs each login) ==========
+          cat > config/includes.chroot/usr/local/bin/set-wallpaper.sh <<'WP'
+          #!/bin/sh
+          sleep 2
+          W=/usr/share/backgrounds/notfound.png
+          props=$(xfconf-query -c xfce4-desktop -l 2>/dev/null | grep 'last-image$')
+          if [ -n "$props" ]; then
+            for p in $props; do xfconf-query -c xfce4-desktop -p "$p" -s "$W" 2>/dev/null; done
+          else
+            for m in monitor0 monitorVirtual-1 monitorVirtual1 monitoreDP-1 monitorLVDS-1 monitorHDMI-1; do
+              xfconf-query -c xfce4-desktop -n -t string -p "/backdrop/screen0/$m/workspace0/last-image" -s "$W" 2>/dev/null
+            done
+          fi
+          xfdesktop --reload 2>/dev/null
+          WP
+          chmod +x config/includes.chroot/usr/local/bin/set-wallpaper.sh
+
+          # ========== autostart: wallpaper + conky HUD ==========
+          cat > config/includes.chroot/etc/skel/.config/autostart/set-wallpaper.desktop <<'DSK'
+          [Desktop Entry]
+          Type=Application
+          Name=404 Wallpaper
+          Exec=/usr/local/bin/set-wallpaper.sh
+          X-GNOME-Autostart-enabled=true
+          DSK
+
+          cat > config/includes.chroot/etc/skel/.config/autostart/conky.desktop <<'DSK'
+          [Desktop Entry]
+          Type=Application
+          Name=Conky HUD
+          Exec=sh -c "sleep 4 && conky"
+          X-GNOME-Autostart-enabled=true
+          DSK
+
+          # ========== conky HUD config ==========
+          cat > config/includes.chroot/etc/skel/.config/conky/conky.conf <<'CONKY'
+          conky.config = {
+              alignment = 'top_right',
+              background = true,
+              own_window = true,
+              own_window_type = 'desktop',
+              own_window_transparent = true,
+              own_window_argb_visual = true,
+              own_window_hints = 'undecorated,below,sticky,skip_taskbar,skip_pager',
+              update_interval = 1.0,
+              double_buffer = true,
+              default_color = '10e0a8',
+              font = 'FiraCode:size=10',
+              gap_x = 26,
+              gap_y = 52,
+              minimum_width = 250,
+              no_buffers = true,
+          };
+          conky.text = [[
+          ${color 1fb6d6}404 NOT FOUND OS${color}  // ghost
+          ${hr}
+          HOST ${alignr}${nodename}
+          UPTIME ${alignr}${uptime_short}
+          ${hr}
+          CPU ${alignr}${cpu}%
+          ${cpubar 4}
+          RAM ${alignr}${mem} / ${memmax}
+          ${membar 4}
+          DISK ${alignr}${fs_used /} / ${fs_size /}
+          ${fs_bar 4 /}
+          ${hr}
+          IP ${alignr}${addr}
+          DOWN ${downspeedf} K ${alignr}UP ${upspeedf} K
+          ${hr}
+          ${color 1fb6d6}stay anonymous${color}
+          ]];
+          CONKY
+
+          # ========== dark GTK + icons ==========
+          cat > config/includes.chroot/etc/skel/.config/gtk-3.0/settings.ini <<'GTK'
+          [Settings]
+          gtk-application-prefer-dark-theme=1
+          gtk-theme-name=Adwaita-dark
+          gtk-icon-theme-name=Papirus-Dark
+          GTK
+
+          # ========== XFCE dark theme ==========
+          cat > config/includes.chroot/etc/skel/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml <<'XS'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <channel name="xsettings" version="1.0">
+            <property name="Net" type="empty">
+              <property name="ThemeName" type="string" value="Adwaita-dark"/>
+              <property name="IconThemeName" type="string" value="Papirus-Dark"/>
+            </property>
+          </channel>
+          XS
+
+          # ========== XFCE wallpaper (static hint; the script above is the reliable one) ==========
+          cat > config/includes.chroot/etc/skel/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml <<'XD'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <channel name="xfce4-desktop" version="1.0">
+            <property name="backdrop" type="empty">
+              <property name="screen0" type="empty">
+                <property name="monitor0" type="empty">
+                  <property name="workspace0" type="empty">
+                    <property name="last-image" type="string" value="/usr/share/backgrounds/notfound.png"/>
+                    <property name="image-style" type="int" value="5"/>
+                  </property>
+                </property>
+              </property>
+            </property>
+          </channel>
+          XD
+
+          # ========== dark green terminal ==========
+          cat > config/includes.chroot/etc/skel/.config/xfce4/terminal/terminalrc <<'TR'
+          [Configuration]
+          FontName=FiraCode 11
+          ColorForeground=#10e0a8
+          ColorBackground=#04070a
+          ColorCursor=#10e0a8
+          MiscShowUnsafePasteDialog=FALSE
+          ScrollingUnlimited=TRUE
+          TR
+
+          # ========== dark login greeter ==========
+          mkdir -p config/includes.chroot/etc/lightdm
+          cat > config/includes.chroot/etc/lightdm/lightdm-gtk-greeter.conf <<'LG'
+          [greeter]
+          background=/usr/share/backgrounds/notfound.png
+          theme-name=Adwaita-dark
+          icon-theme-name=Papirus-Dark
+          LG
+
+          # ========== user + login + shell look (runs in chroot) ==========
           cat > config/hooks/live/0300-user.hook.chroot <<'HOOK'
           #!/bin/sh
           set -e
           # CRITICAL: stop live-config from re-locking the password at boot
           rm -f /lib/live/config/0030-user-setup 2>/dev/null || true
-          # create the ghost user with a known password and sudo rights
+          # shell look for every user (prompt + neofetch)
+          cat >> /etc/skel/.bashrc <<'EOF'
+
+          # --- 404 NOT FOUND OS ---
+          alias ll='ls -lah'
+          export PS1='\[\e[1;32m\]┌──(\[\e[1;36m\]ghost㉿notfound\[\e[1;32m\])-[\[\e[0m\]\w\[\e[1;32m\]]\n└─\[\e[1;31m\]#\[\e[0m\] '
+          command -v neofetch >/dev/null 2>&1 && neofetch 2>/dev/null
+          EOF
+          # replace the default XFCE wallpaper file too (belt & suspenders)
+          for f in /usr/share/backgrounds/xfce/xfce-verticals.png /usr/share/backgrounds/xfce/xfce-x.png; do
+            [ -e "$f" ] && cp -f /usr/share/backgrounds/notfound.png "$f" || true
+          done
+          # create ghost user (known password, sudo)
           id ghost >/dev/null 2>&1 || useradd -m -s /bin/bash ghost
           usermod -aG sudo ghost
           printf 'ghost:ghost\n' | chpasswd
@@ -86,10 +256,11 @@ jobs:
           autologin-user-timeout=0
           user-session=xfce
           EOF
-          echo "user ghost ready (password: ghost), autologin enabled."
+          echo "user ghost ready (password: ghost), autologin + theme enabled."
           HOOK
           chmod +x config/hooks/live/0300-user.hook.chroot
 
+          # ========== ALL pentest tools: best-effort ==========
           cat > config/hooks/live/0200-tools.hook.chroot <<'HOOK'
           #!/bin/sh
           set +e
@@ -121,15 +292,8 @@ jobs:
           HOOK
           chmod +x config/hooks/live/0200-tools.hook.chroot
 
-          cat > config/hooks/live/0100-branding.hook.chroot <<'HOOK'
-          #!/bin/sh
-          set -e
-          mkdir -p /etc/skel/.config/gtk-3.0
-          printf '[Settings]\ngtk-application-prefer-dark-theme=1\n' > /etc/skel/.config/gtk-3.0/settings.ini
-          echo "branding applied."
-          HOOK
-          chmod +x config/hooks/live/0100-branding.hook.chroot
-
+          # ========== os-release ==========
+          mkdir -p config/includes.chroot/etc
           cat > config/includes.chroot/etc/os-release <<'REL'
           PRETTY_NAME="404 NOT FOUND OS (ghost edition)"
           NAME="404 NOT FOUND OS"
@@ -142,7 +306,7 @@ jobs:
           REL
 
           echo "=== generated files ==="
-          find auto config -type f
+          find auto config -type f | sort
 
       - name: Build ISO inside Debian bookworm container
         run: |
@@ -175,6 +339,7 @@ jobs:
           path: |
             404-not-found-os-amd64.iso
             404-not-found-os-amd64.iso.sha256
+          retention-days: 14
 
       - name: Publish Release (on tag)
         if: startsWith(github.ref, 'refs/tags/')
