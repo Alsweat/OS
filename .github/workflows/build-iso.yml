@@ -1,14 +1,14 @@
 name: Build ISO
+
 # =============================================================================
-# 404 NOT FOUND OS — FINAL one-paste ISO builder.
-# The whole build runs INSIDE a real Debian bookworm container, so live-build
-# matches the target distro. This avoids the Ubuntu-live-build vs Debian
-# mismatches (security repo 404, firmware Contents 404, debian-installer,
-# isolinux paths) that needed hand-patching before.
+# 404 NOT FOUND OS — FINAL one-paste ISO builder (with fixed login).
+# Runs inside a real Debian bookworm container so live-build matches the target.
+# Login is set explicitly at build time (no more guessing live-config defaults):
+#     user: ghost   password: ghost       (root password: ghost)
+# The XFCE desktop also auto-logs-in, so you won't even be asked.
 #
 # HOW TO USE:
 #   1. Repo -> Code -> .github/workflows/build-iso.yml -> pencil (Edit)
-#      (or Actions -> "set up a workflow yourself" if it doesn't exist).
 #   2. Select all, delete, paste THIS whole file, Commit.
 #   3. Actions -> "Build ISO" -> "Run workflow".
 #   4. Wait ~40-70 min. Green run -> Artifacts -> download "notfound-iso".
@@ -37,7 +37,7 @@ jobs:
           cd /mnt/build
           mkdir -p auto config/package-lists config/hooks/live config/includes.chroot/etc
 
-          # ---- live-build configuration (pure live ISO; no d-i, no auto-firmware) ----
+          # ---- live-build configuration ----
           cat > auto/config <<'CFG'
           #!/bin/sh
           set -e
@@ -54,7 +54,7 @@ jobs:
               --iso-application "404 NOT FOUND OS" \
               --iso-publisher "404 NOT FOUND OS Project" \
               --iso-volume "404-NOT-FOUND-OS" \
-              --bootappend-live "boot=live components username=ghost hostname=notfound locales=en_US.UTF-8 keyboard-layouts=us" \
+              --bootappend-live "boot=live components live-config.noconfigs=user-setup hostname=notfound locales=en_US.UTF-8 keyboard-layouts=us" \
               "${@}"
           CFG
           chmod +x auto/config
@@ -79,6 +79,32 @@ jobs:
           python3-pip
           ca-certificates
           PKG
+
+          # ---- user + autologin (deterministic login, runs in chroot at build) ----
+          cat > config/hooks/live/0300-user.hook.chroot <<'HOOK'
+          #!/bin/sh
+          set -e
+          # create the ghost user with a known password and sudo rights
+          id ghost >/dev/null 2>&1 || useradd -m -s /bin/bash ghost
+          usermod -aG sudo ghost
+          echo 'ghost:ghost' | chpasswd
+          echo 'root:ghost'  | chpasswd
+          # groups used by lightdm for password-less autologin
+          groupadd -f autologin
+          groupadd -f nopasswdlogin
+          usermod -aG autologin,nopasswdlogin ghost
+          # lightdm: auto-login straight into XFCE as ghost
+          mkdir -p /etc/lightdm/lightdm.conf.d
+          cat > /etc/lightdm/lightdm.conf.d/50-autologin.conf <<EOF
+          [Seat:*]
+          autologin-user=ghost
+          autologin-user-timeout=0
+          user-session=xfce
+          greeter-session=lightdm-gtk-greeter
+          EOF
+          echo "user ghost ready (password: ghost), autologin enabled."
+          HOOK
+          chmod +x config/hooks/live/0300-user.hook.chroot
 
           # ---- ALL pentest tools: best-effort (missing ones skipped, build never fails) ----
           cat > config/hooks/live/0200-tools.hook.chroot <<'HOOK'
@@ -118,13 +144,6 @@ jobs:
           cat > config/hooks/live/0100-branding.hook.chroot <<'HOOK'
           #!/bin/sh
           set -e
-          mkdir -p /etc/lightdm
-          cat > /etc/lightdm/lightdm-gtk-greeter.conf <<EOF
-          [greeter]
-          background=#04070a
-          theme-name=Adwaita-dark
-          clock-format=%H:%M  %a %d %b
-          EOF
           mkdir -p /etc/skel/.config/gtk-3.0
           printf '[Settings]\ngtk-application-prefer-dark-theme=1\n' > /etc/skel/.config/gtk-3.0/settings.ini
           echo "branding applied."
